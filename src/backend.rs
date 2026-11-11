@@ -3,8 +3,11 @@
 //! A dedicated tokio runtime owns the WhatsApp connection, archive, and media
 //! work. Commands and events cross channels, and events wake the UI.
 
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(feature = "nano-gui-profile")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -1741,7 +1744,50 @@ pub enum Unsent {
 }
 
 /// Cross-thread window wake handle: repaints whichever window exists.
-pub use fastframe_shell::Waker;
+#[derive(Clone, Default)]
+pub struct Waker {
+    inner: fastframe_shell::Waker,
+    #[cfg(feature = "nano-gui-profile")]
+    wake_calls: Arc<AtomicU64>,
+}
+
+impl Waker {
+    /// Requests a repaint, or wakes the headless shell when there is no window.
+    pub fn wake(&self) {
+        #[cfg(feature = "nano-gui-profile")]
+        self.wake_calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.wake();
+    }
+
+    /// Takes the number of wake calls since the previous profile sample.
+    #[cfg(feature = "nano-gui-profile")]
+    pub(crate) fn take_wake_calls(&self) -> u64 {
+        self.wake_calls.swap(0, Ordering::Relaxed)
+    }
+}
+
+impl Deref for Waker {
+    type Target = fastframe_shell::Waker;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+#[cfg(all(test, feature = "nano-gui-profile"))]
+mod wake_profile_tests {
+    use super::Waker;
+
+    #[test]
+    fn wake_calls_are_counted_and_sampled_between_intervals() {
+        let waker = Waker::default();
+        assert_eq!(waker.take_wake_calls(), 0);
+        waker.wake();
+        waker.wake();
+        assert_eq!(waker.take_wake_calls(), 2);
+        assert_eq!(waker.take_wake_calls(), 0);
+    }
+}
 
 /// UI handle to the backend runtime.
 pub struct Backend {

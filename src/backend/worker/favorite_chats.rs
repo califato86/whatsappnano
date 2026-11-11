@@ -300,8 +300,8 @@ impl Worker {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::receipt_tests::{PEER, worker};
+    use super::*;
 
     #[test]
     fn an_idle_favorites_sync_stays_asleep_until_woken() {

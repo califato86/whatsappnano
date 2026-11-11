@@ -447,6 +447,66 @@ fn composer_link(text: &str) -> Option<String> {
     crate::safety::first_link(text).filter(|url| crate::safety::preview_url(url).is_some())
 }
 
+#[cfg(feature = "nano-gui-profile")]
+#[derive(Default)]
+struct HeadlessGuiProfile {
+    started: Option<Instant>,
+    background_calls: u64,
+    background_total: Duration,
+    background_max: Duration,
+    waker_wake_calls: u64,
+}
+
+#[cfg(feature = "nano-gui-profile")]
+impl HeadlessGuiProfile {
+    fn start(&mut self) {
+        *self = Self {
+            started: Some(Instant::now()),
+            ..Self::default()
+        };
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn record(&mut self, elapsed: Duration, wake_calls: u64) {
+        if self.started.is_none() {
+            self.start();
+        }
+        self.background_calls += 1;
+        self.background_total += elapsed;
+        self.background_max = self.background_max.max(elapsed);
+        self.waker_wake_calls += wake_calls;
+
+        let Some(started) = self.started.as_ref() else {
+            return;
+        };
+        let interval = started.elapsed();
+        if interval < Duration::from_secs(10) {
+            return;
+        }
+
+        let seconds = interval.as_secs_f64();
+        let average_us = if self.background_calls == 0 {
+            0
+        } else {
+            self.background_total.as_micros() / u128::from(self.background_calls)
+        };
+        log::info!(
+            "gui_profile_hidden interval_ms={} background_frame_calls={} background_frame_calls_per_sec={:.2} background_frame_avg_us={} background_frame_max_us={} waker_wake_calls={} waker_wake_calls_per_sec={:.2}",
+            interval.as_millis(),
+            self.background_calls,
+            self.background_calls as f64 / seconds,
+            average_us,
+            self.background_max.as_micros(),
+            self.waker_wake_calls,
+            self.waker_wake_calls as f64 / seconds,
+        );
+        self.start();
+    }
+}
+
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
@@ -943,6 +1003,12 @@ pub struct App {
     tray_lockable: bool,
     /// Whether the app is running without a window.
     pub window_hidden: bool,
+    /// One-time deadline for trimming this process's working set after a hide.
+    #[cfg(all(windows, feature = "nano-trim-ws"))]
+    trim_working_set_at: Option<Instant>,
+    /// Metrics for the windowless shell; the eframe adapter does not survive hiding.
+    #[cfg(feature = "nano-gui-profile")]
+    headless_gui_profile: HeadlessGuiProfile,
     /// Whether window close should keep the process running.
     pub hide_intent: bool,
     /// Whether a headless app should create a window.
@@ -1788,6 +1854,10 @@ impl App {
             test_raised: false,
             tray_lockable,
             window_hidden: false,
+            #[cfg(all(windows, feature = "nano-trim-ws"))]
+            trim_working_set_at: None,
+            #[cfg(feature = "nano-gui-profile")]
+            headless_gui_profile: HeadlessGuiProfile::default(),
             hide_intent: false,
             wants_show: false,
             tray_wait: None,
@@ -2188,6 +2258,15 @@ impl App {
             self.search_hits.clear();
         }
         self.window_hidden = true;
+        #[cfg(all(windows, feature = "nano-trim-ws"))]
+        {
+            self.trim_working_set_at = Some(Instant::now() + Duration::from_secs(5));
+        }
+        #[cfg(feature = "nano-gui-profile")]
+        {
+            let _ = self.waker.take_wake_calls();
+            self.headless_gui_profile.start();
+        }
         self.window_focused = false;
         self.hide_intent = false;
         self.wants_show = false;
@@ -2733,6 +2812,15 @@ impl App {
         self.theme_transition = fastframe_theme::Transition::default();
         self.zoom_applied = false;
         self.window_hidden = false;
+        #[cfg(all(windows, feature = "nano-trim-ws"))]
+        {
+            self.trim_working_set_at = None;
+        }
+        #[cfg(feature = "nano-gui-profile")]
+        {
+            let _ = self.waker.take_wake_calls();
+            self.headless_gui_profile.reset();
+        }
         self.paste_keys = PasteKeys::default();
         self.hide_intent = false;
         self.wants_show = false;
@@ -10445,8 +10533,37 @@ impl App {
         }
     }
 
+    #[cfg(all(windows, feature = "nano-trim-ws"))]
+    fn trim_working_set_if_due(&mut self, now: Instant) {
+        if !self.trim_working_set_at.is_some_and(|deadline| now >= deadline) {
+            return;
+        }
+        // Consume before the OS call: even a failed trim is one attempt per hide.
+        self.trim_working_set_at = None;
+
+        use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        // SAFETY: GetCurrentProcess returns this process's pseudo-handle.
+        let process = unsafe { GetCurrentProcess() };
+        // SAFETY: the pseudo-handle is valid for this process.
+        if unsafe { K32EmptyWorkingSet(process) } == 0 {
+            log::debug!(
+                "could not trim the hidden process working set: {}",
+                std::io::Error::last_os_error()
+            );
+        } else {
+            log::info!("trimmed the process working set after the window was hidden");
+        }
+    }
+
     /// Processes app state shared by windowed and headless modes.
     pub fn background_frame(&mut self, ctx: &egui::Context) {
+        #[cfg(all(windows, feature = "nano-trim-ws"))]
+        self.trim_working_set_if_due(Instant::now());
+        #[cfg(feature = "nano-gui-profile")]
+        let headless_profile_started = self.window_hidden.then(Instant::now);
+
         // Events are drained before frame_ui observes focus. Losing focus in
         // this frame must take effect before an incoming chat update can read it.
         if self.window_hidden || ctx.input(|input| input.viewport().focused) == Some(false) {
@@ -10486,6 +10603,12 @@ impl App {
         self.follow_receipts();
         self.sync_badge();
         self.request_attention(ctx);
+
+        #[cfg(feature = "nano-gui-profile")]
+        if let Some(started) = headless_profile_started {
+            let wake_calls = self.waker.take_wake_calls();
+            self.headless_gui_profile.record(started.elapsed(), wake_calls);
+        }
     }
 
     /// Answers the system's sleep and wake. Every account reconnects its link
@@ -19862,6 +19985,20 @@ mod tests {
 
         assert!(!app.chat_pins.contains_key(chat));
         assert!(!app.pins.contains_key(chat));
+    }
+
+    #[cfg(all(windows, feature = "nano-trim-ws"))]
+    #[test]
+    fn hidden_working_set_trim_deadline_is_one_shot() {
+        let mut app = app();
+        let due = Instant::now() + Duration::from_secs(5);
+        app.trim_working_set_at = Some(due);
+        app.trim_working_set_if_due(due - Duration::from_millis(1));
+        assert_eq!(app.trim_working_set_at, Some(due));
+        app.trim_working_set_if_due(due);
+        assert!(app.trim_working_set_at.is_none());
+        app.trim_working_set_if_due(due + Duration::from_secs(1));
+        assert!(app.trim_working_set_at.is_none());
     }
 
     #[test]

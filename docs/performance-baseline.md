@@ -242,3 +242,29 @@ Favorite-chat synchronization now uses the same event-driven idle policy. The fi
 
 
 The UI's expired-pin cache is now swept at most once per Unix timestamp second, matching the second-level precision of pin expiry. A fresh phone pin-list or pin-change event invalidates the sweep marker so new data is checked immediately. This avoids walking every cached pinned chat and row on every UI frame.
+
+
+## WhatsNano 0.1.4 v2 — tray working-set trim and hidden diagnostics
+
+### Windows working-set trim
+
+The opt-in `nano-trim-ws` feature schedules one call to `K32EmptyWorkingSet(GetCurrentProcess())` five seconds after the window is handed to the headless shell. The deadline is discarded before the call, so there is no retry or periodic trimming. Attaching a new window clears the deadline; the next hide starts a fresh five-second delay. The feature and its two `windows-sys` API modules are Windows-only.
+
+This asks Windows to remove as many pages as possible from this process's resident working set. It is not a reduction in committed virtual memory or a hard RAM cap; pages may need to be read back when activity resumes. The delay avoids trimming while the window and its assets are still being torn down.
+
+### Hidden GUI profiling
+
+With `nano-gui-profile`, the headless app logs every ten seconds: `background_frame` calls per second, average and maximum `background_frame` duration, and calls to `Waker::wake()` per second. The wake metric counts calls to the wrapper's wake method, including calls that coalesce into the same pending shell wake; it is not a count of unique sleep interruptions. Counters reset on each hide and when a window is shown. This instrumentation does not change headless scheduling or tray behavior.
+
+### v0.16.1 headless-loop diagnosis (Windows)
+
+The app returns `Headless::Wait` from `App::headless_frame`. Pinned fastframe-shell v0.16.1 sets `HEADLESS_TICK` to 150 ms and calls the headless frame before pausing; the app configures the tray idle callback, so each wait is passed to `fastframe-tray::idle`. On Windows that callback uses `MsgWaitForMultipleObjectsEx` with a timeout and pumps pending thread messages. This is a timed/message wait, not a tight spin. The tray's own Windows thread blocks in `GetMessageW` until a native tray message arrives.
+
+Source at the exact v0.16.1 Cargo.lock commit (`ebc7cecb7cfb229e3d6849abd17bff953506fdb8`):
+
+- [Shell tick and headless pause](https://github.com/crmne/fastframe/blob/ebc7cecb7cfb229e3d6849abd17bff953506fdb8/crates/fastframe-shell/src/lib.rs#L107-L109) and [the Wait/pause path](https://github.com/crmne/fastframe/blob/ebc7cecb7cfb229e3d6849abd17bff953506fdb8/crates/fastframe-shell/src/lib.rs#L275-L335)
+- [Tray idle dispatch](https://github.com/crmne/fastframe/blob/ebc7cecb7cfb229e3d6849abd17bff953506fdb8/crates/fastframe-tray/src/lib.rs#L496-L510)
+- [Windows timed message wait](https://github.com/crmne/fastframe/blob/ebc7cecb7cfb229e3d6849abd17bff953506fdb8/crates/fastframe-tray/src/windows.rs#L138-L178)
+- [Windows tray thread message loop](https://github.com/crmne/fastframe/blob/ebc7cecb7cfb229e3d6849abd17bff953506fdb8/crates/fastframe-tray/src/windows.rs#L108-L130)
+
+The 150 ms cadence is the first measurable source of recurring headless work (about 6.7 calls per second). This v2 branch measures that work and its wake-call volume; it deliberately does not change the cadence or tray implementation.

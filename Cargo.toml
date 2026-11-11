@@ -299,7 +299,7 @@ nokhwa = { version = "0.10.11", default-features = false, features = ["input-avf
 [target.'cfg(windows)'.dependencies]
 windows-native-keyring-store = { version = "1.1", default-features = false }
 # Locale calls, and the taskbar's light or dark style.
-windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Registry"] }
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Registry", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 # Accesses the native window handle for the Messages theme's Mica backdrop.
 raw-window-handle = "0.6"
 # The camera for video calls, through Media Foundation.
@@ -338,8 +338,10 @@ nano-one-worker = []
 nano-low-resource = []
 # More aggressive animation profile; includes nano-low-resource.
 nano-ultra-low-resource = ["nano-low-resource"]
-# Logs native GUI callback rates and phase timings every ten seconds.
+# Logs native GUI callback rates and phase timings every ten seconds, including headless work.
 nano-gui-profile = []
+# Windows only: trim this process's working set once, five seconds after each hide.
+nano-trim-ws = []
 
 [profile.release]
 lto = "thin"
