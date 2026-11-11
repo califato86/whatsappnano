@@ -1766,6 +1766,12 @@ impl Waker {
     }
 }
 
+impl std::fmt::Debug for Waker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.inner, f)
+    }
+}
+
 impl Deref for Waker {
     type Target = fastframe_shell::Waker;
 

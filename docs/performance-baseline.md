@@ -248,7 +248,7 @@ The UI's expired-pin cache is now swept at most once per Unix timestamp second, 
 
 ### Windows working-set trim
 
-The opt-in `nano-trim-ws` feature schedules one call to `K32EmptyWorkingSet(GetCurrentProcess())` five seconds after the window is handed to the headless shell. The deadline is discarded before the call, so there is no retry or periodic trimming. Attaching a new window clears the deadline; the next hide starts a fresh five-second delay. The feature and its two `windows-sys` API modules are Windows-only.
+The opt-in `nano-trim-ws` feature schedules one call to `K32EmptyWorkingSet(GetCurrentProcess())` five seconds after the window is handed to the headless shell. The deadline is discarded before the call, so there is no retry or periodic trimming. Attaching a new window clears the deadline; the next hide starts a fresh five-second delay. The feature and its two `windows-sys` API modules are Windows-only. The symbol paths used here are documented for [windows-sys 0.60.2 K32EmptyWorkingSet](https://docs.rs/windows-sys/0.60.2/windows_sys/Win32/System/ProcessStatus/fn.K32EmptyWorkingSet.html) and [GetCurrentProcess](https://docs.rs/windows-sys/0.60.2/windows_sys/Win32/System/Threading/fn.GetCurrentProcess.html).
 
 This asks Windows to remove as many pages as possible from this process's resident working set. It is not a reduction in committed virtual memory or a hard RAM cap; pages may need to be read back when activity resumes. The delay avoids trimming while the window and its assets are still being torn down.
 
